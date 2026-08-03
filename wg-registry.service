@@ -1,0 +1,24 @@
+[Unit]
+Description=WireGuard peer registry
+After=network-online.target
+
+[Service]
+Type=simple
+# A dedicated user that the deploy script creates. It must be allowed to run
+# `wg set wg0 ...` via the restricted sudoers rule (see /etc/sudoers.d/wg-registry).
+User=wg-registry
+Group=wg-registry
+ExecStart=/usr/bin/python3 /opt/wg-registry/wg-registry.py
+Restart=on-failure
+RestartSec=3
+# least-writable state directory
+StateDirectory=wg-registry
+RuntimeDirectory=wg-registry
+ProtectSystem=full
+ProtectHome=true
+# sudo performs only commands permitted by /etc/sudoers.d/wg-registry.
+# NoNewPrivileges cannot be enabled because it blocks sudo's setuid transition.
+NoNewPrivileges=false
+
+[Install]
+WantedBy=multi-user.target
