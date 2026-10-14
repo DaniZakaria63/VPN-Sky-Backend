@@ -9,6 +9,10 @@
 #   ./deploy.sh --host 203.0.113.1 --port 22     # or set WG_* env vars
 set -euo pipefail
 
+# Resolve the files this script ships relative to the script itself, so it can
+# be run from any working directory.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 HOST="${WG_HOST:-}"
 SSH_USER="${WG_SSH_USER:-root}"
 SSH_PORT="${WG_SSH_PORT:-22}"
@@ -69,9 +73,9 @@ echo "    server-pubkey=${SERVER_PUB_KEY:0:8}...  endpoint=${ENDPOINT}"
 deploy() {
   ssh -p "$SSH_PORT" "${SSH_USER}@${HOST}" "rm -rf /tmp/${TAG} && mkdir -m 700 /tmp/${TAG}"
 
-  scp -P "$SSH_PORT" server/wg-registry.py \
-                           server/wg-registry.service \
-                           server/install.sh \
+  scp -P "$SSH_PORT" "$SCRIPT_DIR/wg-registry.py" \
+                           "$SCRIPT_DIR/wg-registry.service" \
+                           "$SCRIPT_DIR/install.sh" \
       "${SSH_USER}@${HOST}:/tmp/${TAG}/" 2>/dev/null
 
   CONFIG_TMP="$(mktemp)"

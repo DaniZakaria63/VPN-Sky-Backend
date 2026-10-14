@@ -5,6 +5,11 @@ per-install Curve25519 key, registers its public key here over an authenticated
 HTTP call, gets a free tunnel address, and builds its own config. The server
 adds the peer with `wg set` automatically — no hand-edited `wg0.conf` per client.
 
+> Backend for the [`VPNSky`](https://github.com/DaniZakaria63/VPN-Sky) Android
+> client. This project was extracted from that repo's `server/` directory, with
+> commit history preserved. `deploy.sh` is the only entry point needed to stand
+> the service up.
+
 ## Files
 
 | file | role |

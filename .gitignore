@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Virtualenv
+.venv/
+venv/
+
+# PyCharm / IDE
+.idea/
+*.iml
+
+# Runtime config and secrets (deploy.sh writes these on the VPS, never here)
+*.env
+
+# OS
+.DS_Store
