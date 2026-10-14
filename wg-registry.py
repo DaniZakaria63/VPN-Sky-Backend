@@ -34,6 +34,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 _PUBKEY_RE = re.compile(r"[A-Za-z0-9+/]{43}=")
+_MAX_BODY = 64 * 1024
 _CONFIG_FILE = "/etc/wg-registry/config.env"
 
 
@@ -270,17 +271,32 @@ class Handler(BaseHTTPRequestHandler):
             self._reply(404, {"error": "not found"})
 
     def do_POST(self):  # noqa: N802
+        try:
+            length = int(self.headers.get("Content-Length", "0") or "0")
+        except ValueError:
+            self.close_connection = True
+            self._reply(400, {"error": "invalid content-length"})
+            return
+        if not 0 <= length <= _MAX_BODY:
+            # Too large to be a pubkey (or malformed). Do not drain; close
+            # the connection instead so the unread body cannot corrupt a
+            # keep-alive successor.
+            self.close_connection = True
+            self._reply(413, {"error": "request too large"})
+            return
+        # Drain the body even on early rejections: keep-alive connections
+        # are pooled (e.g. by Cloudflare), and unread body bytes would be
+        # parsed as the start of the next request line on that connection.
+        raw = self.rfile.read(length) if length else b"{}"
         if not self._authorize():
             self._reply(401, {"error": "unauthorized"})
             return
         if self.path != "/register":
             self._reply(404, {"error": "not found"})
             return
-        self._register()
+        self._register(raw)
 
-    def _register(self):
-        length = int(self.headers.get("Content-Length", "0") or "0")
-        raw = self.rfile.read(length) if length else b"{}"
+    def _register(self, raw: bytes):
         try:
             payload = json.loads(raw or b"{}")
         except json.JSONDecodeError:
