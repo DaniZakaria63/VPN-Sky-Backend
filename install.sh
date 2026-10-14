@@ -23,9 +23,13 @@ id -u wg-registry >/dev/null 2>&1 || \
   sudo useradd --system --no-create-home --shell /usr/sbin/nologin wg-registry
 
 sudo mkdir -p /opt/wg-registry /etc/wg-registry /var/lib/wg-registry
-sudo install -m 0755 "${STAGE}/wg-registry.py" /opt/wg-registry/wg-registry.py
-sudo install -m 0644 "${STAGE}/wg-registry.service" /etc/systemd/system/wg-registry.service
-sudo chown -R wg-registry:wg-registry /opt/wg-registry /var/lib/wg-registry
+# Service code stays root-owned: the unprivileged service user must not be
+# able to rewrite its own executable. Only state (/var/lib) is writable by it.
+sudo install -m 0755 -o root -g root "${STAGE}/wg-registry.py" /opt/wg-registry/wg-registry.py
+sudo install -m 0644 -o root -g root "${STAGE}/wg-registry.service" /etc/systemd/system/wg-registry.service
+sudo install -m 0755 -o root -g root "${STAGE}/wg-registry-apply.sh" /usr/local/sbin/wg-registry-apply
+sudo chown root:root /opt/wg-registry
+sudo chown -R wg-registry:wg-registry /var/lib/wg-registry
 
 WG_BIN="$(command -v wg)"
 sudo tee /etc/sudoers.d/wg-registry >/dev/null <<SUDOERS
@@ -33,6 +37,18 @@ wg-registry ALL=(root) NOPASSWD: ${WG_BIN} set ${WIREGUARD_INTERFACE} peer *, ${
 SUDOERS
 sudo chmod 0440 /etc/sudoers.d/wg-registry
 sudo visudo -cf /etc/sudoers.d/wg-registry
+
+# CI/CD: allow the `deploy` user (GitHub Actions) to apply staged updates
+# through the restricted helper only. Skipped if no deploy user exists.
+if id -u deploy >/dev/null 2>&1; then
+  sudo tee /etc/sudoers.d/wg-registry-deploy >/dev/null <<'SUDOERS'
+deploy ALL=(root) NOPASSWD: /usr/local/sbin/wg-registry-apply
+SUDOERS
+  sudo chmod 0440 /etc/sudoers.d/wg-registry-deploy
+  sudo visudo -cf /etc/sudoers.d/wg-registry-deploy
+else
+  echo "note: no 'deploy' user; skipping CI sudoers rule" >&2
+fi
 
 sudo install -m 0640 -o root -g wg-registry "$DEPLOY_CONFIG" /etc/wg-registry/config.env
 sudo systemctl daemon-reload

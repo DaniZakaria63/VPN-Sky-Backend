@@ -1,0 +1,82 @@
+# Deploy wg-registry to the WireGuard server on every push to master.
+#
+# The job stages the two service files (wg-registry.py, wg-registry.service)
+# to /tmp/wg-registry.stage over SSH, then runs the restricted root helper
+# /usr/local/sbin/wg-registry-apply (NOPASSWD for the deploy user) which
+# installs them, restarts the service and health-checks it. Server config
+# (/etc/wg-registry/config.env) is never touched by CI.
+#
+# Required repository secrets (Settings -> Secrets and variables -> Actions):
+#   DEPLOY_HOST         server IP or hostname
+#   DEPLOY_USER         SSH user ("deploy" in the runbook)
+#   DEPLOY_SSH_KEY      private key whose public half is in that user's authorized_keys
+#   DEPLOY_KNOWN_HOSTS  output of: ssh-keyscan -p <port> <host>
+#   DEPLOY_PORT         optional, defaults to 22
+#
+# Setup, testing and troubleshooting: README.md ("CI/CD (GitHub Actions)").
+name: Deploy
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy to server
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          for name in DEPLOY_SSH_KEY DEPLOY_KNOWN_HOSTS; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::$name secret is not set"
+              exit 1
+            fi
+          done
+          mkdir -p "$HOME/.ssh"
+          chmod 700 "$HOME/.ssh"
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$HOME/.ssh/deploy_key"
+          chmod 600 "$HOME/.ssh/deploy_key"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/known_hosts"
+
+      - name: Deploy with scp + remote apply
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+        run: |
+          if [ -z "${DEPLOY_HOST:-}" ] || [ -z "${DEPLOY_USER:-}" ]; then
+            echo "::error::DEPLOY_HOST / DEPLOY_USER secrets are not set"
+            exit 1
+          fi
+
+          # Pinned host key: config is written to ~/.ssh/known_hosts above.
+          SSH="ssh -i $HOME/.ssh/deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -p ${DEPLOY_PORT:-22}"
+          SCP="scp -i $HOME/.ssh/deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -P ${DEPLOY_PORT:-22}"
+
+          # Fresh owner-only staging directory for this deploy.
+          $SSH "$DEPLOY_USER@$DEPLOY_HOST" \
+            'rm -rf /tmp/wg-registry.stage && mkdir -m 700 /tmp/wg-registry.stage'
+          $SCP wg-registry.py wg-registry.service \
+            "$DEPLOY_USER@$DEPLOY_HOST:/tmp/wg-registry.stage/"
+
+          # Restricted root helper: install, restart, health-check.
+          $SSH "$DEPLOY_USER@$DEPLOY_HOST" 'sudo -n /usr/local/sbin/wg-registry-apply'
+
+          echo "Deployed $(git rev-parse --short HEAD) to $DEPLOY_HOST"

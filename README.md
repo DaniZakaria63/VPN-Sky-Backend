@@ -17,7 +17,9 @@ adds the peer with `wg set` automatically — no hand-edited `wg0.conf` per clie
 | `wg-registry.py` | HTTP service (Python >=3.8 stdlib, no deps) |
 | `wg-registry.service` | systemd unit (runs as unprivileged `wg-registry` user) |
 | `wg-registry.sudoers` | `sudoers.d` rule: lets `wg-registry` run only `wg set/show wg0 …` |
+| `wg-registry-apply.sh` | restricted root helper CI runs to install staged files + restart the service |
 | `deploy.sh` | one-shot deploy to a VPS — credentials entered at runtime, never hardcoded |
+| `.github/workflows/deploy.yml` | CI/CD: deploys to the server on every push to `master` |
 
 ## Remote Config keys (Firebase)
 
@@ -54,8 +56,42 @@ the next free/recycled address.
   never enters the repo, the remote config, or the registry.
 - On the server, the registry runs unprivileged and is constrained by a
   narrow passwordless sudoers entry to `wg set/show` on the one interface.
-  The deploy SSH user enters its sudo password during installation only;
-  registration never prompts for a password.
+  Its code in `/opt/wg-registry` is root-owned, so the service user cannot
+  rewrite its own executable. The deploy SSH user enters its sudo password
+  during installation only; registration never prompts for a password.
+- CI deploys run as a dedicated `deploy` user whose only passwordless root
+  command is `wg-registry-apply` — it installs staged service files and
+  restarts the unit; it cannot edit the server config or run anything else.
+
+## Server prerequisites (WireGuard)
+
+The registry manages peers on an **existing** WireGuard interface; it does not
+create the tunnel. On a fresh VPS (Ubuntu shown):
+
+```bash
+sudo apt-get update && sudo apt-get install -y wireguard-tools
+```
+
+Create `/etc/wireguard/wg0.conf` (server takes the first pool address `.1`):
+
+```ini
+[Interface]
+Address = 10.0.0.1/24
+ListenPort = 15221
+PrivateKey = <output of: wg genkey>
+PostUp = iptables -A FORWARD -i wg0 -j ACCEPT; iptables -A FORWARD -o wg0 -j ACCEPT; iptables -t nat -A POSTROUTING -o <wan-if> -j MASQUERADE
+PostDown = iptables -D FORWARD -i wg0 -j ACCEPT; iptables -D FORWARD -o wg0 -j ACCEPT; iptables -t nat -D POSTROUTING -o <wan-if> -j MASQUERADE
+```
+
+```bash
+echo 'net.ipv4.ip_forward=1' | sudo tee /etc/sysctl.d/99-wireguard.conf
+sudo sysctl -p /etc/sysctl.d/99-wireguard.conf
+sudo systemctl enable --now wg-quick@wg0
+```
+
+Open **UDP** `WG_PORT` (default 15221) in any provider/cloud firewall — clients
+connect to the endpoint directly; HTTP tunnels/proxies do not carry WireGuard
+traffic. A Cloudflare-proxied hostname cannot be the endpoint.
 
 ## Deploy (runtime credentials only)
 
@@ -87,6 +123,50 @@ curl -H "X-Registry-Token: <token>" http://127.0.0.1:8080/health   # -> {"ok": t
 
 > The token is stored **only** in `/etc/wg-registry/config.env` on the server
 > (`root:wg-registry`, mode `0640`).
+
+## CI/CD (GitHub Actions)
+
+`.github/workflows/deploy.yml` deploys on every push to `master` (and manually
+via Actions → Deploy → Run workflow). It stages `wg-registry.py` and
+`wg-registry.service` to `/tmp/wg-registry.stage` over SSH as the `deploy`
+user, then runs the restricted root helper, which installs the files, restarts
+the service, and health-checks it:
+
+```
+sudo -n /usr/local/sbin/wg-registry-apply
+```
+
+Server config (`/etc/wg-registry/config.env`) is never touched by CI — it stays
+server-side, exactly as `deploy.sh` wrote it. `install.sh` installs the helper
+and, when a `deploy` user exists, this narrow sudoers rule:
+
+```
+/etc/sudoers.d/wg-registry-deploy:
+deploy ALL=(root) NOPASSWD: /usr/local/sbin/wg-registry-apply
+```
+
+### Repository secrets
+
+| secret | value |
+|--------|-------|
+| `DEPLOY_HOST` | server IP or hostname |
+| `DEPLOY_USER` | `deploy` |
+| `DEPLOY_SSH_KEY` | private key whose public half is in `/home/deploy/.ssh/authorized_keys` |
+| `DEPLOY_KNOWN_HOSTS` | output of `ssh-keyscan -p <port> <host>` |
+| `DEPLOY_PORT` | optional, defaults to 22 |
+
+```
+gh secret set DEPLOY_HOST --body '<server-ip>'
+gh secret set DEPLOY_USER --body 'deploy'
+gh secret set DEPLOY_PORT --body '22'           # skip if using port 22
+gh secret set DEPLOY_SSH_KEY < deploy_key
+gh secret set DEPLOY_KNOWN_HOSTS < known_hosts
+```
+
+Rollback: revert the bad commit on `master` and push (deploys always apply
+master). Rotate the SSH key by replacing the `authorized_keys` line and
+updating `DEPLOY_SSH_KEY`. If the host key changes, refresh
+`DEPLOY_KNOWN_HOSTS` with a new `ssh-keyscan`.
 
 ## Manual smoke (no app)
 

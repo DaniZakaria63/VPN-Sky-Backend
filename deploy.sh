@@ -75,6 +75,7 @@ deploy() {
 
   scp -P "$SSH_PORT" "$SCRIPT_DIR/wg-registry.py" \
                            "$SCRIPT_DIR/wg-registry.service" \
+                           "$SCRIPT_DIR/wg-registry-apply.sh" \
                            "$SCRIPT_DIR/install.sh" \
       "${SSH_USER}@${HOST}:/tmp/${TAG}/" 2>/dev/null
 
